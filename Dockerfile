@@ -2,8 +2,9 @@ FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب پیش‌نیازهای سیستم
+# نصب پیش‌نیازهای سیستمی (از جمله libgl1 برای حل مشکل)
 RUN apt-get update && apt-get install -y \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxrender1 \
@@ -13,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY . /app
 
-# نصب پکیج‌ها (فقط نسخه headless از OpenCV)
-RUN pip install --no-cache-dir python-telegram-bot==20.3 mediapipe opencv-python-headless Pillow numpy
+# نصب پکیج‌های پایتون
+RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "bot.py"]
