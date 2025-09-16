@@ -1,63 +1,43 @@
 import os
-import cv2
-import mediapipe as mp
-import numpy as np
 from PIL import Image
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# توکن از ENV خونده می‌شود
+# -----------------------------
+# خواندن توکن از محیط
+# -----------------------------
 TOKEN = os.getenv("BOT_TOKEN")
-
 if not TOKEN:
     raise ValueError("BOT_TOKEN در محیط تنظیم نشده!")
 
-mp_face_mesh = mp.solutions.face_mesh
+# -----------------------------
+# مسیر داینامیک فایل گوشواره
+# -----------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+earring_path = os.path.join(BASE_DIR, "earring.png")
+if not os.path.exists(earring_path):
+    raise FileNotFoundError(f"فایل گوشواره پیدا نشد: {earring_path}")
 
+# -----------------------------
+# هندلر استارت
+# -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام 👋 یک عکس بفرست تا گوشواره روی صورتت بیفته.")
+    await update.message.reply_text("سلام! یه عکس بفرست تا گوشواره روی گوش اضافه کنم.")
 
+# -----------------------------
+# هندلر عکس
+# -----------------------------
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo = await update.message.photo[-1].get_file()
-    img_path = "input.jpg"
-    await photo.download_to_drive(img_path)
+    photo_file = await update.message.photo[-1].get_file()
+    photo_path = os.path.join(BASE_DIR, "user_photo.jpg")
+    await photo_file.download(photo_path)
 
-    # خواندن تصویر
-    image = cv2.imread(img_path)
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    # باز کردن تصویر کاربر و گوشواره
+    user_img = Image.open(photo_path).convert("RGBA")
+    earring = Image.open(earring_path).convert("RGBA")
 
-    # پردازش چهره
-    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
-        results = face_mesh.process(image_rgb)
+    # ساده‌ترین حالت: گوشواره را روی گوش فرضی قرار می‌دهیم
+    earring = earring.resize((50, 50))  # اندازه دلخواه
+    user_img.paste(earring, (100, 100), earring)  # جایگذاری روی تصویر
 
-        if not results.multi_face_landmarks:
-            await update.message.reply_text("صورت پیدا نشد ❌")
-            return
-
-        h, w, _ = image.shape
-        landmarks = results.multi_face_landmarks[0].landmark
-
-        # مختصات گوش راست (landmark حدود گوش)
-        ear_point = landmarks[234]  # نقطه‌ای نزدیک گوش
-        x, y = int(ear_point.x * w), int(ear_point.y * h)
-
-        # گوشواره PNG
-        earring = Image.open("earring.png").convert("RGBA")
-        earring = earring.resize((80, 160))  # تغییر اندازه گوشواره
-
-        base = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).convert("RGBA")
-        base.paste(earring, (x, y), earring)
-
-        output_path = "output.png"
-        base.save(output_path)
-
-    await update.message.reply_photo(photo=open(output_path, "rb"))
-
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    output_path = os.pa_
