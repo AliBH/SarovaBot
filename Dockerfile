@@ -1,20 +1,23 @@
+# از نسخه سبک Python 3.11 استفاده می‌کنیم
 FROM python:3.11-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
+# کار در مسیر /app
+WORKDIR /app
 
-# نصب پیش‌نیازهای سیستم (حل libGL)
+# نصب کتابخانه‌های لازم سیستم
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxrender1 \
     libxext6 \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# کپی کردن کد و requirements
 COPY . /app
 
-# نصب کتابخانه‌های پایتون
+# نصب پکیج‌های Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# مشخص کردن دستور پیش‌فرض اجرای بات
 CMD ["python", "bot.py"]
