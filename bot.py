@@ -1,68 +1,59 @@
 import os
 import cv2
 import mediapipe as mp
-from PIL import Image
 import numpy as np
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from PIL import Image
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# توکن رو از متغیر محیطی Railway می‌خونه
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-earring_image = Image.open("earring.png").convert("RGBA")
-user_state = {}
+TOKEN = os.getenv("BOT_TOKEN")  # تو Railway باید ENV اضافه کنی
 
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "سلام 👋\nعکس خودت رو بفرست تا گوشواره روی گوش‌هات اضافه کنم.\n"
-        "حالت پیش‌فرض: فقط گوش راست ✅"
-    )
+    await update.message.reply_text("سلام 👋 یک عکس بفرست تا گوشواره روی صورتت بیفته.")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_state[user_id] = "right"
+    photo = await update.message.photo[-1].get_file()
+    img_path = "input.jpg"
+    await photo.download_to_drive(img_path)
 
-    file = await update.message.photo[-1].get_file()
-    photo_path = f"{user_id}_photo.jpg"
-    await file.download_to_drive(photo_path)
+    # خواندن تصویر
+    image = cv2.imread(img_path)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    processed_image_path = process_image(photo_path, user_state[user_id])
+    # پردازش چهره
+    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
+        results = face_mesh.process(image_rgb)
 
-    keyboard = [[InlineKeyboardButton("🔄 یک گوش / دو گوش", callback_data="toggle")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        if not results.multi_face_landmarks:
+            await update.message.reply_text("صورت پیدا نشد ❌")
+            return
 
-    await update.message.reply_photo(photo=open(processed_image_path, "rb"), reply_markup=reply_markup)
+        h, w, _ = image.shape
+        landmarks = results.multi_face_landmarks[0].landmark
 
-def process_image(image_path, mode="right"):
-    image = cv2.imread(image_path)
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb_image)
-    pil_image = Image.fromarray(rgb_image).convert("RGBA")
+        # مختصات گوش راست (landmark حدود گوش)
+        ear_point = landmarks[234]  # نقطه‌ای نزدیک گوش
+        x, y = int(ear_point.x * w), int(ear_point.y * h)
 
-    if results.multi_face_landmarks:
-        for face_landmarks in results.multi_face_landmarks:
-            img_h, img_w, _ = image.shape
+        # گوشواره PNG
+        earring = Image.open("earring.png").convert("RGBA")
+        earring = earring.resize((80, 160))  # تغییر اندازه گوشواره
 
-            # مختصات تقریبی گوش‌ها
-            right_x = int(face_landmarks.landmark[454].x * img_w)
-            right_y = int(face_landmarks.landmark[454].y * img_h)
-            left_x = int(face_landmarks.landmark[234].x * img_w)
-            left_y = int(face_landmarks.landmark[234].y * img_h)
+        base = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).convert("RGBA")
+        base.paste(earring, (x, y), earring)
 
-            # محاسبه فاصله دو گوش برای تعیین سایز گوشواره
-            ear_distance = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
-            scale_factor = int(ear_distance * 0.25)  # حدود 25٪ فاصله گوش‌ها
+        output_path = "output.png"
+        base.save(output_path)
 
-            resized_earring = earring_image.resize((scale_factor, scale_factor))
+    await update.message.reply_photo(photo=open(output_path, "rb"))
 
-            if mode in ["right", "both"]:
-                pil_image.paste(resized_earring, (right_x - scale_factor//2, right_y - scale_factor//2), resized_earring)
-            if mode in ["left", "both"]:
-                pil_image.paste(resized_earring, (left_x - scale_factor//2, left_y - scale_factor//2), resized_earring)
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.run_polling()
 
-    output_path = image_path.replace(".jpg", "_earring.png")
-    pil_image.save(output_path)
-    return output
+if __name__ == "__main__":
+    main()
