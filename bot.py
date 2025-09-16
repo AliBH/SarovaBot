@@ -6,7 +6,11 @@ from PIL import Image
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")  # تو Railway باید ENV اضافه کنی
+# توکن از ENV خونده می‌شود
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN در محیط تنظیم نشده!")
 
 mp_face_mesh = mp.solutions.face_mesh
 

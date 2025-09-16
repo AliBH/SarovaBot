@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب پیش‌نیازهای سیستمی (از جمله libgl1 برای حل مشکل)
+# نصب پیش‌نیازهای سیستم (حل libGL)
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY . /app
 
-# نصب پکیج‌های پایتون
+# نصب کتابخانه‌های پایتون
 RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "bot.py"]
