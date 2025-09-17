@@ -1,5 +1,5 @@
 python-telegram-bot==20.3
-mediapipe
-opencv-python-headless
-Pillow
-numpy
+mediapipe==0.10.21
+opencv-python-headless==4.11.0.86
+Pillow==11.3.0
+numpy==1.26.4
