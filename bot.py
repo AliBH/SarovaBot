@@ -5,124 +5,144 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-# تنظیم مسیر دینامیک فایل‌ها
+# مسیر داینامیک برای فایل‌ها
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PRODUCTS_DIR = os.path.join(BASE_DIR, "products")
+PRODUCTS_DIR = os.path.join(BASE_DIR, "products")  # پوشه محصولات
 
-# MediaPipe Face Mesh
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5)
+mp_face_mesh = mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
 
-# محصول نمونه
-products = {
-    "earring1": "earring1.png",
-    "earring2": "earring2.png",
-    "necklace1": "necklace1.png"
+# محصولات نمونه
+PRODUCTS = {
+    "earring1": os.path.join(PRODUCTS_DIR, "earring1.png"),
+    "earring2": os.path.join(PRODUCTS_DIR, "earring2.png"),
+    "necklace1": os.path.join(PRODUCTS_DIR, "necklace1.png"),
+    "necklace2": os.path.join(PRODUCTS_DIR, "necklace2.png")
 }
 
-# تنظیم نور و کنتراست خودکار
-def auto_enhance(image: Image.Image) -> Image.Image:
-    # تبدیل به HSV برای کنترل روشنایی
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    lab = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l = cv2.equalizeHist(l)  # بهبود کانال روشنایی
-    lab = cv2.merge((l, a, b))
-    img_cv = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    image = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+# تابع تنظیم خودکار نور و کنتراست
+def auto_adjust_image(pil_img):
+    enhancer = ImageEnhance.Brightness(pil_img)
+    pil_img = enhancer.enhance(1.2)
+    enhancer = ImageEnhance.Contrast(pil_img)
+    pil_img = enhancer.enhance(1.3)
+    return pil_img
+
+# تابع اعمال گوشواره روی لاله گوش
+def apply_earring(image, earring_path, ear_coords):
+    earring = Image.open(earring_path).convert("RGBA")
+    x1, y1 = ear_coords[0]
+    if len(ear_coords) > 1:
+        x2, y2 = ear_coords[1]
+        width = int(abs(x2 - x1) * 1.5)
+    else:
+        width = 50  # گوشواره تک گوش
+    earring = earring.resize((width, width))
+    image.paste(earring, (x1 - width//2, y1 - width//2), earring)
     return image
 
-# قرار دادن گوشواره روی گوش
-def place_earring_on_face(face_img: Image.Image, earring_img: Image.Image) -> Image.Image:
-    img_cv = np.array(face_img)
-    img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
-    results = face_mesh.process(img_rgb)
+# تابع اعمال گردنبند روی گردن
+def apply_necklace(image, necklace_path, neck_coords):
+    necklace = Image.open(necklace_path).convert("RGBA")
+    x, y, w = neck_coords
+    necklace = necklace.resize((w, int(w/2)))
+    image.paste(necklace, (x, y), necklace)
+    return image
 
+# شناسایی لاله گوش با MediaPipe
+def get_ear_coords(image):
+    img_rgb = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    results = mp_face_mesh.process(img_rgb)
     if not results.multi_face_landmarks:
-        return face_img  # اگر چهره پیدا نشد، عکس اصلی برگردد
-
+        return None
     face_landmarks = results.multi_face_landmarks[0]
+    left_ear = (int(face_landmarks.landmark[234].x * image.width),
+                int(face_landmarks.landmark[234].y * image.height))
+    right_ear = (int(face_landmarks.landmark[454].x * image.width),
+                 int(face_landmarks.landmark[454].y * image.height))
+    return [left_ear, right_ear]
 
-    # شاخص لاله گوش (تقریباً نقاط 234 و 454 برای چپ و راست)
-    left_ear = face_landmarks.landmark[234]
-    right_ear = face_landmarks.landmark[454]
+# شناسایی گردن (تقریبی)
+def get_neck_coords(image):
+    img_rgb = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    results = mp_face_mesh.process(img_rgb)
+    if not results.multi_face_landmarks:
+        return None
+    face_landmarks = results.multi_face_landmarks[0]
+    x = int(face_landmarks.landmark[152].x * image.width) - 50
+    y = int(face_landmarks.landmark[152].y * image.height)
+    width = 100
+    return (x, y, width)
 
-    h, w, _ = img_cv.shape
-    positions = [
-        (int(left_ear.x * w), int(left_ear.y * h)),
-        (int(right_ear.x * w), int(right_ear.y * h))
+# منوی انتخاب محصول
+def get_products_keyboard():
+    buttons = [
+        [InlineKeyboardButton("گوشواره 1", callback_data="earring1")],
+        [InlineKeyboardButton("گوشواره 2", callback_data="earring2")],
+        [InlineKeyboardButton("گردنبند 1", callback_data="necklace1")],
+        [InlineKeyboardButton("گردنبند 2", callback_data="necklace2")]
     ]
-
-    earring_resized = earring_img.resize((int(w * 0.05), int(w * 0.05)))  # سایز گوشواره متناسب با عکس
-
-    for pos in positions:
-        x, y = pos
-        ex, ey = earring_resized.size
-        box = (x - ex//2, y - ey//2)
-        face_img.paste(earring_resized, box, earring_resized)
-
-    return face_img
-
-# ساخت منوی محصولات
-def build_product_menu():
-    buttons = []
-    for code, filename in products.items():
-        buttons.append([InlineKeyboardButton(code, callback_data=code)])
     return InlineKeyboardMarkup(buttons)
 
-# دستورات ربات
+# دستور start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! محصول مورد نظر را انتخاب کنید:", reply_markup=build_product_menu())
+    await update.message.reply_text(
+        "سلام! لطفاً محصول مورد نظر خود را انتخاب کنید:",
+        reply_markup=get_products_keyboard()
+    )
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# انتخاب محصول
+async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    product_code = query.data
-    context.user_data['selected_product'] = product_code
-    await query.edit_message_text(text=f"شما محصول {product_code} را انتخاب کردید. حالا یک عکس ارسال کنید.")
+    context.user_data["selected_product"] = query.data
+    await query.edit_message_text("لطفاً یک عکس ارسال کنید:")
 
+# دریافت عکس و اعمال محصول
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    product_code = context.user_data.get('selected_product')
-    if not product_code:
-        await update.message.reply_text("لطفاً اول محصول را انتخاب کنید.")
+    if "selected_product" not in context.user_data:
+        await update.message.reply_text("ابتدا محصول را انتخاب کنید.")
         return
 
-    product_file = os.path.join(PRODUCTS_DIR, products[product_code])
-    if not os.path.isfile(product_file):
+    file = await update.message.photo[-1].get_file()
+    bio = BytesIO()
+    await file.download_to_memory(out=bio)
+    bio.seek(0)
+    image = Image.open(bio).convert("RGBA")
+    image = auto_adjust_image(image)
+
+    product_code = context.user_data["selected_product"]
+    product_path = PRODUCTS.get(product_code)
+
+    if not product_path or not os.path.exists(product_path):
         await update.message.reply_text("فایل محصول روی سرور پیدا نشد — لطفاً ادمین را خبر کن.")
         return
 
-    photo_file = await update.message.photo[-1].get_file()
-    photo_bytes = BytesIO()
-    await photo_file.download(out=photo_bytes)
-    face_img = Image.open(photo_bytes).convert("RGBA")
-    face_img = auto_enhance(face_img)
-
-    product_img = Image.open(product_file).convert("RGBA")
     if "earring" in product_code:
-        result_img = place_earring_on_face(face_img, product_img)
-    else:
-        # TODO: برای گردنبند می‌توان مشابه عمل کرد
-        result_img = face_img
+        ear_coords = get_ear_coords(image)
+        if not ear_coords:
+            await update.message.reply_text("لاله گوش پیدا نشد!")
+            return
+        image = apply_earring(image, product_path, ear_coords)
 
-    output = BytesIO()
-    output.name = "result.png"
-    result_img.save(output, "PNG")
-    output.seek(0)
-    await update.message.reply_photo(output)
+    elif "necklace" in product_code:
+        neck_coords = get_neck_coords(image)
+        if not neck_coords:
+            await update.message.reply_text("گردن پیدا نشد!")
+            return
+        image = apply_necklace(image, product_path, neck_coords)
 
-# اجرای ربات
+    out_bio = BytesIO()
+    image.save(out_bio, "PNG")
+    out_bio.seek(0)
+    await update.message.reply_photo(out_bio)
+
+# Main
 TOKEN = os.environ.get("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("BOT_TOKEN در محیط تنظیم نشده!")
-
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button))
+app.add_handler(CallbackQueryHandler(select_product))
 app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-if __name__ == "__main__":
-    print("Bot is running...")
-    app.run_polling()
+app.run_polling()
