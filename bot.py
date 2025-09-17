@@ -3,118 +3,146 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from PIL import Image
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import ReplyKeyboardMarkup, Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters, ContextTypes
+)
 
-# ---------------- تنظیمات ----------------
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("توکن ربات در متغیر محیطی BOT_TOKEN تنظیم نشده!")
+# ====== TOKEN ======
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN در محیط تنظیم نشده!")
 
-PRODUCTS = {
-    "E001": "products/earring1.png",
-    "E002": "products/earring2.png",
-    "N001": "products/necklace1.png",
-}
-
+# ====== Mediapipe ======
 mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
 
-# ---------------- پردازش تصویر ----------------
-def add_product(image_path, product_path, product_type="earring"):
-    img = cv2.imread(image_path)
-    h, w, _ = img.shape
+# ====== انتخاب محصول ======
+selected_product = {}
 
-    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, refine_landmarks=True)
-    results = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+# ====== Utility: پیدا کردن دقیق لاله گوش ======
+def get_precise_ear_positions(landmarks, img_w, img_h):
+    left_points = [landmarks[234], landmarks[93], landmarks[132]]
+    lx = int(np.mean([p.x for p in left_points]) * img_w)
+    ly = int(np.mean([p.y for p in left_points]) * img_h)
 
-    if not results.multi_face_landmarks:
+    right_points = [landmarks[454], landmarks[263], landmarks[361]]
+    rx = int(np.mean([p.x for p in right_points]) * img_w)
+    ry = int(np.mean([p.y for p in right_points]) * img_h)
+
+    return (lx, ly), (rx, ry)
+
+# ====== Utility: پیدا کردن دقیق محل گردنبند ======
+def get_neck_position_and_size(landmarks, img_w, img_h):
+    chin = landmarks[152]
+    jaw_left = landmarks[234]
+    jaw_right = landmarks[454]
+
+    cx = int(chin.x * img_w)
+    cy = int(chin.y * img_h) + 20  # کمی پایین‌تر از چونه
+
+    neck_width = int(abs(jaw_right.x - jaw_left.x) * img_w * 1.2)  # کمی بزرگتر از عرض فک
+    neck_height = int(neck_width * 0.5)  # نسبت ارتفاع به عرض
+
+    return (cx, cy), (neck_width, neck_height)
+
+# ====== Utility: انداختن محصول روی تصویر ======
+def overlay_product(user_img, product_path, positions, scale=None, size=None):
+    if not os.path.exists(product_path):
         return None
 
-    landmarks = results.multi_face_landmarks[0].landmark
-    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    base = Image.fromarray(cv2.cvtColor(user_img, cv2.COLOR_BGR2RGB)).convert("RGBA")
     product = Image.open(product_path).convert("RGBA")
 
-    # فاصله چشم‌ها برای مقیاس‌دهی
-    eye_left = landmarks[33]
-    eye_right = landmarks[263]
-    eye_dist = int(((eye_left.x - eye_right.x) ** 2 + (eye_left.y - eye_right.y) ** 2) ** 0.5 * w)
+    if size:
+        product = product.resize(size)
 
-    if product_type == "earring":
-        # نقاط گوش
-        left_ear = (int(landmarks[234].x * w), int(landmarks[234].y * h))
-        right_ear = (int(landmarks[454].x * w), int(landmarks[454].y * h))
+    for (x, y) in positions:
+        if not size and scale:
+            new_w = int(product.width * scale)
+            new_h = int(product.height * scale)
+            product_resized = product.resize((new_w, new_h))
+        else:
+            product_resized = product
 
-        # سایز گوشواره
-        new_size = (eye_dist // 4, eye_dist // 2)
-        product = product.resize(new_size)
+        paste_x = x - product_resized.width // 2
+        paste_y = y - product_resized.height // 2
+        base.paste(product_resized, (paste_x, paste_y), product_resized)
 
-        # بررسی گوش چپ
-        if left_ear[0] > 0 and left_ear[0] < w:
-            img_pil.paste(product, (left_ear[0] - new_size[0]//2, left_ear[1]), product)
+    return cv2.cvtColor(np.array(base), cv2.COLOR_RGBA2BGR)
 
-        # بررسی گوش راست
-        if right_ear[0] > 0 and right_ear[0] < w:
-            img_pil.paste(product, (right_ear[0] - new_size[0]//2, right_ear[1]), product)
-
-    elif product_type == "necklace":
-        chin = (int(landmarks[152].x * w), int(landmarks[152].y * h))
-        new_size = (eye_dist, eye_dist // 2)
-        product = product.resize(new_size)
-        img_pil.paste(product, (chin[0] - new_size[0]//2, chin[1]), product)
-
-    return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-
-# ---------------- هندلرها ----------------
+# ====== Telegram Handlers ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["E001", "E002"], ["N001"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-    await update.message.reply_text("سلام! یک کد محصول انتخاب کن:", reply_markup=reply_markup)
+    keyboard = [
+        ["👂 گوشواره‌ها", "💎 گردنبندها"],
+        ["❌ لغو"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("سلام 👋\nلطفاً دسته‌بندی محصول رو انتخاب کن:", reply_markup=reply_markup)
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    code = update.message.text.strip().upper()
-    if code in PRODUCTS:
-        context.user_data["product_code"] = code
-        await update.message.reply_text(f"محصول {code} انتخاب شد ✅ حالا عکس خودتو بفرست.")
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    chat_id = update.message.chat_id
+
+    if text == "👂 گوشواره‌ها":
+        selected_product[chat_id] = "earrings"
+        await update.message.reply_text("کد گوشواره رو وارد کن (مثلاً E001):")
+    elif text == "💎 گردنبندها":
+        selected_product[chat_id] = "necklaces"
+        await update.message.reply_text("کد گردنبند رو وارد کن (مثلاً N001):")
+    elif text == "❌ لغو":
+        selected_product.pop(chat_id, None)
+        await update.message.reply_text("لغو شد ✅")
     else:
-        await update.message.reply_text("کد محصول معتبر نیست!")
+        if chat_id not in selected_product:
+            await update.message.reply_text("❗ اول باید دسته‌بندی انتخاب کنی.")
+            return
+        category = selected_product[chat_id]
+        code = text.strip()
+        context.user_data["selected_file"] = f"products/{category}/{code}.png"
+        await update.message.reply_text(f"محصول {code} انتخاب شد ✅\nحالا یک عکس بفرست!")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "product_code" not in context.user_data:
-        await update.message.reply_text("اول یک محصول انتخاب کن (E001, E002, N001).")
+    if "selected_file" not in context.user_data:
+        await update.message.reply_text("❗ اول باید محصول رو انتخاب کنی.")
         return
 
-    code = context.user_data["product_code"]
-    product_path = PRODUCTS.get(code)
-
-    if not os.path.exists(product_path):
-        await update.message.reply_text("⚠️ فایل محصول روی سرور پیدا نشد — لطفاً ادمین را خبر کن.")
-        return
-
-    # دانلود عکس کاربر
+    product_path = context.user_data["selected_file"]
     photo = await update.message.photo[-1].get_file()
-    input_path = "input.jpg"
-    output_path = "output.jpg"
-    await photo.download_to_drive(input_path)
+    img_path = "input.jpg"
+    await photo.download_to_drive(img_path)
 
-    # تعیین نوع محصول
-    product_type = "earring" if code.startswith("E") else "necklace"
-    result = add_product(input_path, product_path, product_type)
+    img = cv2.imread(img_path)
+    h, w, _ = img.shape
+
+    results = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    if not results.multi_face_landmarks:
+        await update.message.reply_text("❌ صورت پیدا نشد.")
+        return
+
+    landmarks = results.multi_face_landmarks[0].landmark
+
+    if "earrings" in product_path:
+        positions = get_precise_ear_positions(landmarks, w, h)
+        result = overlay_product(img, product_path, positions, scale=0.45)
+    else:
+        neck_pos, neck_size = get_neck_position_and_size(landmarks, w, h)
+        result = overlay_product(img, product_path, [neck_pos], size=neck_size)
 
     if result is None:
-        await update.message.reply_text("هیچ صورتی پیدا نشد 😕")
+        await update.message.reply_text("❌ فایل محصول روی سرور پیدا نشد — لطفاً ادمین را خبر کن.")
         return
 
-    cv2.imwrite(output_path, result)
-    await update.message.reply_photo(photo=open(output_path, "rb"))
+    out_path = "output.png"
+    cv2.imwrite(out_path, result)
+    await update.message.reply_photo(photo=open(out_path, "rb"))
 
-# ---------------- اجرای ربات ----------------
+# ====== Main ======
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
     app.run_polling()
 
 if __name__ == "__main__":
